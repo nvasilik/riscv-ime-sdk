@@ -8,8 +8,9 @@
 #   guard ──> resolve ──> component (matrix, only missing images) ──> sdk
 #
 # The guard job always runs first: no secrets, no internal hosts, no pins outside the
-# lock, and the lock agrees with the manifest and the pins. `make check`
-# runs the same scripts locally. Nothing is built or pushed from inputs
+# lock, the lock agrees with the manifest and the pins, and no tag in a
+# component repo was moved since `make lock`. `make check` and
+# `make check-refs` run the same scripts locally. Nothing is built or pushed from inputs
 # that fail it.
 #
 # The toolchain and qemu images are tagged with the git tree hash of
@@ -103,9 +104,14 @@ jobs:
       - name: No secrets, no internal hosts, no pins outside the lock
         run: ./scripts/check-pins.sh
       # Runs after a check-pins failure too, so that one run reports both.
+      # A release tag also requires every component pinned by a tag or a
+      # commit, and the base image by a digest.
       - name: components.yaml, sdk.lock.yaml and build/*/pins.hcl agree
         if: ${{ !cancelled() }}
-        run: ./scripts/check-lock.sh
+        run: ./scripts/check-lock.sh ${{ github.event_name == 'push' && github.ref_type == 'tag' && '--release' || '' }}
+      - name: The tags and the base image still resolve to the lock
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-refs.sh
 
   resolve:
     needs: guard

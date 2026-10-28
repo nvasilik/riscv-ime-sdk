@@ -14,23 +14,22 @@
 schema: 2
 sdk_version: "2026.10.14"
 
-# Base image of every build stage. `make lock` pins it by digest, so a
-# republished tag cannot change a build silently.
-base_image: ubuntu:26.04
+# Base image of every build stage, pinned by digest
+base_image: ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 components:
   crosstools-ng:
     repo: https://github.com/Openchip-Software/riscv-ime-crosstool-NG.git
-    ref:  vrull/gcc16-libatomic
+    ref:  openchip/releases/20260414
   binutils-gdb:
     repo: https://github.com/Openchip-Software/riscv-ime-binutils.git
-    ref:  vrull/ime-poc/20260504
+    ref:  openchip/releases/20260504
   gcc:
     repo: https://github.com/Openchip-Software/riscv-ime-gcc.git
-    ref:  ime-cleanup
+    ref:  openchip/releases/20260706
   qemu:
     repo: https://github.com/Openchip-Software/riscv-ime-qemu.git
-    ref:  vrull/ime-wip
+    ref:  openchip/releases/20260628
 
 # Build stages, not repos. Each stage is a directory under build/, and
 # `make lock` writes the pins of the components it lists to

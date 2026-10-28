@@ -9,9 +9,8 @@
 #                          lock, render the pins
 #   make-lock.sh --render  render the pins from the existing lock only
 #
-# Refs are resolved with `git ls-remote`, so no clone is needed. The
-# component repos are public, so git needs no credentials. The base image digest is read from the Docker
-# Hub registry API with curl.
+# The refs and the base image are resolved by scripts/resolve.sh, so no
+# clone is needed.
 
 set -euo pipefail
 
@@ -19,6 +18,9 @@ MANIFEST="${MANIFEST:-components.yaml}"
 LOCK="${LOCK:-sdk.lock.yaml}"
 
 command -v yq >/dev/null || { echo "make-lock: yq required" >&2; exit 1; }
+
+# shellcheck source=scripts/resolve.sh
+source "$(dirname "$0")/resolve.sh"
 
 log() { printf '[make-lock] %s\n' "$*" >&2; }
 
@@ -31,46 +33,14 @@ spdx_header() {
 }
 # REUSE-IgnoreEnd
 
-# Docker Hub image reference "name:tag" -> "docker.io/library/name:tag@sha256:...".
-# The digest is that of the multi-platform index, as `docker pull` uses it.
-resolve_image() {
-    local ref="$1" name tag repo token digest
-    name="${ref%%:*}"
-    tag="${ref#*:}"
-    [[ "$name" == */* ]] && repo="$name" || repo="library/${name}"
-    token=$(curl -fsSL "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" \
-            | yq -p json -r '.token')
-    digest=$(curl -fsSI \
-                -H "Authorization: Bearer ${token}" \
-                -H 'Accept: application/vnd.oci.image.index.v1+json' \
-                -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-                "https://registry-1.docker.io/v2/${repo}/manifests/${tag}" \
-             | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" {print $2}')
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { log "FATAL: cannot resolve ${ref}"; exit 1; }
-    echo "docker.io/${repo}:${tag}@${digest}"
-}
-
-# Branch, then peeled tag, then tag, then a literal SHA.
-resolve_ref() {
-    local repo="$1" ref="$2" sha
-    sha=$(git ls-remote "$repo" "refs/heads/${ref}" | awk '{print $1; exit}')
-    [[ -n "$sha" ]] || sha=$(git ls-remote "$repo" "refs/tags/${ref}^{}" | awk '{print $1; exit}')
-    [[ -n "$sha" ]] || sha=$(git ls-remote "$repo" "refs/tags/${ref}"     | awk '{print $1; exit}')
-    if [[ -z "$sha" ]]; then
-        [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { log "FATAL: cannot resolve ${ref} in ${repo}"; exit 1; }
-        sha="$ref"
-    fi
-    echo "$sha"
-}
-
 write_lock() {
-    local tmp c repo ref sha base_ref base_pinned
+    local tmp c repo ref resolved kind sha base_ref base_pinned
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' RETURN
 
     base_ref=$(yq -r '.base_image' "$MANIFEST")
     log "resolving base image ${base_ref}"
-    base_pinned=$(resolve_image "$base_ref")
+    base_pinned=$(resolve_image "$base_ref") || exit 1
 
     {
         echo "---"
@@ -92,17 +62,57 @@ write_lock() {
         repo=$(yq -r ".components.\"${c}\".repo" "$MANIFEST")
         ref=$(yq  -r ".components.\"${c}\".ref"  "$MANIFEST")
         log "resolving ${c}  ${ref}"
-        sha=$(resolve_ref "$repo" "$ref")
+        resolved=$(resolve_ref "$repo" "$ref") || exit 1
+        read -r kind sha <<< "$resolved"
         {
             echo "  ${c}:"
             echo "    repo:          ${repo}"
             echo "    commit:        \"${sha}\""
             echo "    resolved_from: ${ref}"
+            echo "    resolved_kind: ${kind}"
         } >> "$tmp"
     done
 
+    [[ -f "$LOCK" ]] && summarize "$LOCK" "$tmp"
     mv "$tmp" "$LOCK"
     log "wrote ${LOCK}"
+}
+
+# What changed from the old lock to the new one, one line per component
+# and the base image, so that the diff need not be read to find out:
+#
+#   gcc     ime-cleanup -> openchip/releases/20260706   (commit unchanged f3ac260eca8f)
+#   qemu    vrull/ime-wip                               (commit d856b96cedfa -> 0123456789ab)
+summarize() {
+    local old="$1" new="$2" c from to was now refs what
+    row() { log "$(printf '  %-14s %-50s %s' "$@")"; }
+    log "changes from the previous lock:"
+    for c in $(yq -r '(.components | keys) + ["base_image"] | unique | .[]' "$old" "$new" | sort -u); do
+        if [[ "$c" == base_image ]]; then
+            from=$(yq -r '.base_image.resolved_from' "$old")
+            to=$(yq   -r '.base_image.resolved_from' "$new")
+            was=$(yq  -r '.base_image.pinned | sub(".*@sha256:"; "")' "$old")
+            now=$(yq  -r '.base_image.pinned | sub(".*@sha256:"; "")' "$new")
+        else
+            from=$(yq -r ".components.\"${c}\".resolved_from // \"\"" "$old")
+            to=$(yq   -r ".components.\"${c}\".resolved_from // \"\"" "$new")
+            was=$(yq  -r ".components.\"${c}\".commit // \"\""        "$old")
+            now=$(yq  -r ".components.\"${c}\".commit // \"\""        "$new")
+        fi
+        if   [[ -z "$from" ]]; then row "$c" "$to"   "(new: ${now::12})"; continue
+        elif [[ -z "$to"   ]]; then row "$c" "$from" "(removed)";         continue
+        fi
+        # A digest-pinned base_image ref repeats the digest; drop it.
+        refs="${from%%@*}"
+        [[ "${from%%@*}" == "${to%%@*}" ]] || refs="${from%%@*} -> ${to%%@*}"
+        what=commit
+        [[ "$c" == base_image ]] && what=digest
+        if [[ "$was" == "$now" ]]; then
+            row "$c" "$refs" "(${what} unchanged ${now::12})"
+        else
+            row "$c" "$refs" "(${what} ${was::12} -> ${now::12})"
+        fi
+    done
 }
 
 # One bake target "<stage>-pins" per stage, holding the build args of the

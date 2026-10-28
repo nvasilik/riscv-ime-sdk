@@ -7,11 +7,21 @@
 # `make lock` writes the lock from the manifest and renders the pins from
 # the lock. This script fails when any of the three was edited without
 # running it. Run in CI on every PR, and by `make check`.
+#
+#   check-lock.sh            the three files agree
+#   check-lock.sh --release  and every component is pinned by a tag or a
+#                            commit, not a branch. Run in CI on a release tag.
 
 set -uo pipefail
 
 MANIFEST="${MANIFEST:-components.yaml}"
 LOCK="${LOCK:-sdk.lock.yaml}"
+
+case "${1:-}" in
+    "")        release=false ;;
+    --release) release=true ;;
+    *)         echo "usage: $0 [--release]" >&2; exit 2 ;;
+esac
 
 command -v yq >/dev/null || { echo "check-lock: yq required" >&2; exit 1; }
 
@@ -42,9 +52,29 @@ for c in $(yq -r '.components | keys | .[]' "$MANIFEST"); do
                    "$(yq -r ".components.\"$c\".resolved_from" "$LOCK")"
     same "$c repo" "$(yq -r ".components.\"$c\".repo" "$MANIFEST")" \
                    "$(yq -r ".components.\"$c\".repo" "$LOCK")"
+    kind=$(yq -r ".components.\"$c\".resolved_kind" "$LOCK")
+    case "$kind" in
+        branch|tag) ;;
+        commit)
+            same "$c commit" "$(yq -r ".components.\"$c\".ref" "$MANIFEST")" \
+                             "$(yq -r ".components.\"$c\".commit" "$LOCK")" ;;
+        *)  bad "$c: resolved_kind '$kind' is not branch, tag or commit — run 'make lock'" ;;
+    esac
+    # A release must be rebuildable from components.yaml alone. A branch has
+    # moved on by then.
+    if [[ "$release" == true && "$kind" == branch ]]; then
+        bad "$c: a release must pin a tag or a commit, not the branch '$(yq -r ".components.\"$c\".ref" "$MANIFEST")'"
+    fi
 done
 same base_image "$(yq -r '.base_image' "$MANIFEST")" \
                 "$(yq -r '.base_image.resolved_from' "$LOCK")"
+base=$(yq -r '.base_image' "$MANIFEST")
+if [[ "$base" == *@* ]]; then
+    pinned=$(yq -r '.base_image.pinned' "$LOCK")
+    same "base_image digest" "${base#*@}" "${pinned#*@}"
+elif [[ "$release" == true ]]; then
+    bad "base_image: a release must pin a digest, not the tag '$base'"
+fi
 
 # The component image tags are git tree hashes of build/<stage>, so the pins
 # must be in those directories. Render them from the lock and compare with
