@@ -34,11 +34,13 @@
 #   workflow_dispatch, publish=on    -> pushed as :openchip-v<short-sha>
 #
 # A release tag must be openchip-v<sdk_version>, with sdk_version read from
-# sdk.lock.yaml. The resolve job fails otherwise, before anything is pushed.
+# sdk.lock.yaml, and every component must be pinned to a tag that points at
+# its locked commit, so that the release can be rebuilt from source. The
+# resolve job fails otherwise, before anything is pushed.
 #
-# To release: bump sdk_version in components.yaml, run `make lock`, merge,
-# then push the tag openchip-v<sdk_version> (or create a GitHub Release with
-# that tag).
+# To release: tag every component repo and set its ref in components.yaml
+# to that tag, bump sdk_version, run `make lock`, merge, then push the tag
+# openchip-v<sdk_version> (or create a GitHub Release with that tag).
 #
 # To publish a test image from any branch, run this workflow from the
 # Actions tab on that branch with "publish" checked. It never moves :latest.
@@ -142,6 +144,14 @@ jobs:
             exit 1
           fi
           echo "release $GITHUB_REF_NAME matches sdk_version $version"
+
+      # A branch can be rebased, and a commit on no branch or tag may not
+      # stay fetchable. A release builds only from component tags, so that
+      # it can be rebuilt from source.
+      # Runs after a failed tag check too, so that one run reports both.
+      - name: Check that every component is pinned to a tag
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' }}
+        run: ./scripts/check-release.sh
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:

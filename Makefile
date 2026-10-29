@@ -14,6 +14,7 @@
 #   make lock                resolve components.yaml -> sdk.lock.yaml + build/*/pins.hcl
 #   make pins                render build/*/pins.hcl from the existing lock
 #   make check               run the guard checks
+#   make check-release       check that every component is pinned to a tag
 #   make hashes              print the component image tags CI looks for
 #
 # CI reuses component images from GHCR; `make sdk` always builds from source.
@@ -43,7 +44,7 @@ export LOCK_DIGEST := $(shell sha256sum $(LOCK) | cut -d' ' -f1)
 BAKE := docker buildx bake -f docker-bake.hcl $(foreach s,$(COMPONENTS) sdk,-f build/$(s)/pins.hcl)
 TAG  := --set sdk.tags=$(IMAGE)
 
-.PHONY: all sdk $(COMPONENTS) lock pins check hashes print clean
+.PHONY: all sdk $(COMPONENTS) lock pins check check-release hashes print clean
 .DEFAULT_GOAL := all
 
 all: $(DIST).sif $(DIST).tar.xz
@@ -61,6 +62,10 @@ pins:
 check:
 	./scripts/check-pins.sh
 	./scripts/check-lock.sh
+
+## Release: every component is pinned to a tag at its locked commit.
+check-release:
+	./scripts/check-release.sh
 
 sdk:
 	$(BAKE) $(TAG) --set sdk.output=type=docker sdk

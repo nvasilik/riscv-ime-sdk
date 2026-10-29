@@ -54,9 +54,11 @@ These are in addition to the targets in
 | `make lock` | resolve `components.yaml` into `sdk.lock.yaml` and render `build/*/pins.hcl` |
 | `make pins` | render `build/*/pins.hcl` from the existing lock, without resolving anything |
 | `make check` | run the guard checks: no credentials, no internal hosts, no pins outside the lock, and `components.yaml`, lock and pins agree |
+| `make check-release` | check that every component is pinned to a tag that points at its locked commit; a release requires it |
 | `make hashes` | print the component image tags CI looks for |
 
 `make lock` additionally needs `curl` and access to Docker Hub.
+`make lock` and `make check-release` need access to the component repos.
 
 `make hashes` uses the git tree hash of `build/toolchain` and `build/qemu`
 at `HEAD`, so uncommitted changes are not included.
@@ -78,10 +80,9 @@ To build the SDK from another commit, branch or tag of a component repo:
        ref:  deadbeefcafef00d1234567890abcdef12345678   # was: ime-cleanup
    ```
 
-   A moving branch name is fine during development. Once the change is
-   settled, pin a tag or an exact SHA, so that `components.yaml` records
-   what you meant to build and not whatever was at the branch head that
-   day.
+   A moving branch name or a commit SHA is fine during development. A
+   release requires a tag on every component; see
+   [Releasing](#releasing).
 
 3. **Resolve it: `make lock`.** This runs
    [`scripts/make-lock.sh`](scripts/make-lock.sh). For each component
@@ -138,8 +139,8 @@ docker-bake.hcl          build graph: toolchain, qemu, sdk targets
 build/toolchain/         Dockerfile, crosstool-NG defconfig template, pins.hcl
 build/qemu/              Dockerfile, pins.hcl
 build/sdk/               Dockerfile of the SDK image, pins.hcl
-scripts/                 make-lock.sh, check-pins.sh, check-lock.sh
-.github/workflows/       sdk (pins and lock checks, component and SDK images)
+scripts/                 make-lock.sh, check-pins.sh, check-lock.sh, check-release.sh
+.github/workflows/       sdk (pins, lock and release checks, component and SDK images)
 .github/actions/         free-disk, setup-yq
 ```
 
@@ -148,7 +149,9 @@ scripts/                 make-lock.sh, check-pins.sh, check-lock.sh
 The `sdk` workflow runs four jobs: `guard`, `resolve`, `component` and
 `sdk`. `guard` runs the checks of `make check` on every trigger, and the
 other jobs wait for it, so nothing is built or pushed from pins it
-rejects.
+rejects. On a release tag, `resolve` also checks the tag against
+`sdk_version` and runs the check of `make check-release`; see
+[Releasing](#releasing).
 
 ### Component images
 
@@ -223,12 +226,17 @@ Every image carries `sdk_version` from `sdk.lock.yaml` in its
 SDK version. `make lock` copies it into `sdk.lock.yaml` and
 `build/sdk/pins.hcl`, and the `guard` job fails if either differs.
 
-1. Set `sdk_version` in `components.yaml` to the release date,
+1. Tag every component repo at the commit to release, and set the
+   component's `ref:` in `components.yaml` to that tag. Any tag name
+   works, except one that is also a branch name of that repo (`make
+   lock` resolves the branch first) or one that is 40 hex digits. A
+   branch or a commit SHA as `ref:` is not accepted.
+2. Set `sdk_version` in `components.yaml` to the release date,
    `YYYY.MM.DD`.
-2. Run `make lock`, and commit `components.yaml`, `sdk.lock.yaml` and
-   `build/*/pins.hcl`.
-3. Open a PR and merge it.
-4. Tag the merge commit and push the tag:
+3. Run `make lock`, then `make check-release`, and commit
+   `components.yaml`, `sdk.lock.yaml` and `build/*/pins.hcl`.
+4. Open a PR and merge it.
+5. Tag the merge commit and push the tag:
 
    ```sh
    git tag openchip-v<version> <merge commit>
@@ -243,6 +251,15 @@ The `resolve` job fails before anything is pushed if the tag is not
 `sdk_version` from `sdk.lock.yaml` at the tagged commit. To fix it,
 delete the tag, bump `sdk_version` in `components.yaml`, run
 `make lock`, merge, and tag the new merge commit.
+
+It also fails unless `make check-release` passes: every component is
+pinned to a tag at its locked commit, so the release can be rebuilt from
+source after a branch is rebased. To fix it, delete the release tag (and
+GitHub Release), redo step 1, and continue from step 2.
+
+The check covers only the component sources, and only at release time:
+protect the component tags with a tag ruleset. Ubuntu packages are not
+pinned, and Docker Hub can drop an old `base_image` digest.
 
 ### From-scratch verification
 
